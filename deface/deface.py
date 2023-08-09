@@ -157,7 +157,7 @@ def video_detect(
         reader = get_reader(ipath, ffmpeg_config)
         meta = reader.get_meta_data()
 
-        writer = get_writer(opath, ffmpeg_config, meta, keep_audio)
+        writer = get_writer(opath, ffmpeg_config, meta, keep_audio, ipath)
 
         process_frames(reader, writer, centerface, threshold, mask_scale, replacewith, ellipse, draw_scores, replaceimg, mosaicsize, enable_preview, cam)
 
@@ -173,7 +173,7 @@ def get_reader(ipath: str, ffmpeg_config: Dict[str, str]):
     return imageio.get_reader(ipath)
 
 
-def get_writer(opath: str, ffmpeg_config: Dict[str, str], meta, keep_audio: bool):
+def get_writer(opath: str, ffmpeg_config: Dict[str, str], meta, keep_audio: bool, ipath):
     _ffmpeg_config = ffmpeg_config.copy()
     _ffmpeg_config.setdefault('fps', meta['fps'])
 
