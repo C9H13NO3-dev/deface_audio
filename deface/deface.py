@@ -12,6 +12,9 @@ import numpy as np
 import imageio
 import imageio.plugins.ffmpeg
 import cv2
+from moviepy.editor import *
+from pedalboard import Pedalboard, Gain, PitchShift
+from pedalboard.io import AudioFile
 
 from deface import __version__
 from deface.centerface import CenterFace
@@ -102,83 +105,118 @@ def cam_read_iter(reader):
         yield reader.get_next_data()
 
 
+TEMP_AUDIO = "audio_temp.wav"
+PROCESSED_AUDIO = "processed_audio.wav"
+
+def extract_audio_from_video(video_path: str, audio_path: str):
+    clip = VideoFileClip(video_path)
+    clip.audio.write_audiofile(audio_path)
+
+def distort_audio(audio_input: str, audio_output: str, sample_rate: float = 44100.0):
+    with AudioFile(audio_input).resampled_to(sample_rate) as f:
+        audio = f.read(f.frames)
+
+    board = Pedalboard([
+        Gain(gain_db=20),
+        PitchShift(semitones=-4.0),
+    ])
+    effected_audio = board(audio, sample_rate)
+
+    with AudioFile(audio_output, 'w', sample_rate, effected_audio.shape[0]) as f:
+        f.write(effected_audio)
+
+def combine_video_audio(video_path: str, audio_path: str, output_path: str):
+    videoclip = VideoFileClip(video_path)
+    audioclip = AudioFileClip(audio_path)
+    
+    videoclip.audio = audioclip
+    videoclip.write_videofile(output_path)
+
 def video_detect(
-        ipath: str,
-        opath: str,
-        centerface: CenterFace,
-        threshold: float,
-        enable_preview: bool,
-        cam: bool,
-        nested: bool,
-        replacewith: str,
-        mask_scale: float,
-        ellipse: bool,
-        draw_scores: bool,
-        ffmpeg_config: Dict[str, str],
-        replaceimg = None,
-        keep_audio: bool = False,
-        mosaicsize: int = 20,
+    ipath: str,
+    opath: str,
+    centerface: CenterFace,
+    threshold: float,
+    enable_preview: bool,
+    cam: bool,
+    nested: bool,
+    replacewith: str,
+    mask_scale: float,
+    ellipse: bool,
+    draw_scores: bool,
+    ffmpeg_config: Dict[str, str],
+    replaceimg=None,
+    keep_audio: bool = False,
+    mosaicsize: int = 20
 ):
+
+    extract_audio_from_video(ipath, TEMP_AUDIO)
+    distort_audio(TEMP_AUDIO, PROCESSED_AUDIO)
+
     try:
-        if 'fps' in ffmpeg_config:
-            reader: imageio.plugins.ffmpeg.FfmpegFormat.Reader = imageio.get_reader(ipath, fps=ffmpeg_config['fps'])
-        else:
-            reader: imageio.plugins.ffmpeg.FfmpegFormat.Reader = imageio.get_reader(ipath)
-
+        reader = get_reader(ipath, ffmpeg_config)
         meta = reader.get_meta_data()
-        _ = meta['size']
-    except:
-        if cam:
-            print(f'Could not find video device {ipath}. Please set a valid input.')
-        else:
-            print(f'Could not open file {ipath} as a video file with imageio. Skipping file...')
-        return
 
-    if cam:
-        nframes = None
-        read_iter = cam_read_iter(reader)
-    else:
-        read_iter = reader.iter_data()
-        nframes = reader.count_frames()
-    if nested:
-        bar = tqdm.tqdm(dynamic_ncols=True, total=nframes, position=1, leave=True)
-    else:
-        bar = tqdm.tqdm(dynamic_ncols=True, total=nframes)
+        writer = get_writer(opath, ffmpeg_config, meta, keep_audio)
 
-    if opath is not None:
-        _ffmpeg_config = ffmpeg_config.copy()
-        #  If fps is not explicitly set in ffmpeg_config, use source video fps value
-        _ffmpeg_config.setdefault('fps', meta['fps'])
-        if keep_audio:  # Carry over audio from input path, use "copy" codec (no transcoding) by default
-            _ffmpeg_config.setdefault('audio_path', ipath)
-            _ffmpeg_config.setdefault('audio_codec', 'copy')
-        writer: imageio.plugins.ffmpeg.FfmpegFormat.Writer = imageio.get_writer(
-            opath, format='FFMPEG', mode='I', **_ffmpeg_config
-        )
+        process_frames(reader, writer, centerface, threshold, mask_scale, replacewith, ellipse, draw_scores, replaceimg, mosaicsize, enable_preview)
 
-    for frame in read_iter:
-        # Perform network inference, get bb dets but discard landmark predictions
+    except Exception as e:
+        handle_exceptions(ipath, cam, e)
+
+    combine_video_audio(opath, PROCESSED_AUDIO, opath)
+
+
+def get_reader(ipath: str, ffmpeg_config: Dict[str, str]):
+    if 'fps' in ffmpeg_config:
+        return imageio.get_reader(ipath, fps=ffmpeg_config['fps'])
+    return imageio.get_reader(ipath)
+
+
+def get_writer(opath: str, ffmpeg_config: Dict[str, str], meta, keep_audio: bool):
+    _ffmpeg_config = ffmpeg_config.copy()
+    _ffmpeg_config.setdefault('fps', meta['fps'])
+
+    if keep_audio:
+        _ffmpeg_config.setdefault('audio_path', ipath)
+        _ffmpeg_config.setdefault('audio_codec', 'copy')
+
+    return imageio.get_writer(opath, format='FFMPEG', mode='I', **_ffmpeg_config)
+
+
+def process_frames(reader, writer, centerface, threshold, mask_scale, replacewith, ellipse, draw_scores, replaceimg, mosaicsize, enable_preview):
+    nframes = reader.count_frames() if not cam else None
+    bar = tqdm.tqdm(dynamic_ncols=True, total=nframes)
+
+    for frame in reader.iter_data():
         dets, _ = centerface(frame, threshold=threshold)
 
         anonymize_frame(
-            dets, frame, mask_scale=mask_scale,
-            replacewith=replacewith, ellipse=ellipse, draw_scores=draw_scores,
+            dets, frame, mask_scale=mask_scale, 
+            replacewith=replacewith, ellipse=ellipse, draw_scores=draw_scores, 
             replaceimg=replaceimg, mosaicsize=mosaicsize
         )
 
-        if opath is not None:
-            writer.append_data(frame)
+        writer.append_data(frame)
 
         if enable_preview:
-            cv2.imshow('Preview of anonymization results (quit by pressing Q or Escape)', frame[:, :, ::-1])  # RGB -> RGB
-            if cv2.waitKey(1) & 0xFF in [ord('q'), 27]:  # 27 is the escape key code
+            cv2.imshow('Preview of anonymization results (quit by pressing Q or Escape)', frame[:, :, ::-1])
+            if cv2.waitKey(1) & 0xFF in [ord('q'), 27]:
                 cv2.destroyAllWindows()
                 break
+
         bar.update()
+
     reader.close()
-    if opath is not None:
-        writer.close()
+    writer.close()
     bar.close()
+
+
+def handle_exceptions(ipath: str, cam: bool, error):
+    if cam:
+        print(f'Could not find video device {ipath}. Please set a valid input.')
+    else:
+        print(f'Could not open file {ipath} as a video file with imageio. Skipping file... Error: {error}')
 
 
 def image_detect(
