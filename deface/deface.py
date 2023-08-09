@@ -159,7 +159,7 @@ def video_detect(
 
         writer = get_writer(opath, ffmpeg_config, meta, keep_audio)
 
-        process_frames(reader, writer, centerface, threshold, mask_scale, replacewith, ellipse, draw_scores, replaceimg, mosaicsize, enable_preview)
+        process_frames(reader, writer, centerface, threshold, mask_scale, replacewith, ellipse, draw_scores, replaceimg, mosaicsize, enable_preview, cam)
 
     except Exception as e:
         handle_exceptions(ipath, cam, e)
@@ -184,7 +184,7 @@ def get_writer(opath: str, ffmpeg_config: Dict[str, str], meta, keep_audio: bool
     return imageio.get_writer(opath, format='FFMPEG', mode='I', **_ffmpeg_config)
 
 
-def process_frames(reader, writer, centerface, threshold, mask_scale, replacewith, ellipse, draw_scores, replaceimg, mosaicsize, enable_preview):
+def process_frames(reader, writer, centerface, threshold, mask_scale, replacewith, ellipse, draw_scores, replaceimg, mosaicsize, enable_preview, cam):
     nframes = reader.count_frames() if not cam else None
     bar = tqdm.tqdm(dynamic_ncols=True, total=nframes)
 
